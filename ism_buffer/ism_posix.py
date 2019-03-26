@@ -27,8 +27,7 @@
 # falsely stating that sharing is not supported).  pthread_mutexes are simpler, having only one flag, and are
 # about 2x faster accroding to some simple benchmarking.  However, this difference is dwarfed by Python
 # interpreter overhead, and in order to avoid adding a third implementation, the POSIX implementation
-# accomodates OS X by using pthread_rwlocks (only the pthread_rwlock write flag is utilized). win32 does its
-# thing, as always.
+# accomodates OS X by using pthread_rwlocks (only the pthread_rwlock write flag is utilized).
 
 import contextlib
 import ctypes
@@ -45,8 +44,8 @@ from . import ism_base
 
 if sys.platform == 'linux':
     lib = ctypes.CDLL('librt.so.1', use_errno=True)
-    # NB: 3rd argument, mode_t, is 4 bytes on linux and 2 bytes on osx (64 bit linux and osx, that is.  I
-    # haven't had a chance to try this on 32-bit platforms, but patches / pull requests are welcome.)
+    # NB: 3rd argument, mode_t, is 4 bytes on linux and 2 bytes on osx (64 bit linux and osx, that is.
+    # Not tested on 32-bit platforms.)
     shm_open_argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_uint32]
     pthread_rwlockattr_t = ctypes.c_byte * 8
     pthread_rwlock_t = ctypes.c_byte * 56
@@ -70,7 +69,7 @@ def register_lib_func(func_name, argtypes, err='pthread'):
             if result != 0:
                 raise OSError(result, '{}(..) failed: {}'.format(func_name, describe_sys_errno(result)))
             return result
-    elif err == 'os':        
+    elif err == 'os':
         def errcheck(result, func, args):
             if result < 0:
                 e = ctypes.get_errno()
@@ -145,7 +144,7 @@ class ISMBuffer(ism_base.ISMBase):
                     assert size_header.magic_cookie == self._MAGIC_COOKIE
                     self.size = size_header.data_size
                     descr_size = size_header.descr_size
-        
+
             class DataLayout(ctypes.Structure):
                 _fields_ = [
                     ('size_header', SizeHeader),
@@ -154,12 +153,12 @@ class ISMBuffer(ism_base.ISMBase):
                     ('refcount_header', RefCountHeader)
                 ]
             mmap_size = ctypes.sizeof(DataLayout)
-        
+
             if create:
                 # If we're creating it, open the fd now. If it was extant, the fd already got opened above.
                 fd = lib.shm_open(self._name, os.O_RDWR | os.O_CREAT | os.O_EXCL, permissions)
-                os.ftruncate(fd, mmap_size)
-            
+                os.ftruncate(fd, mmap_size) # TODO: is truncation necessary?
+
             mmap_f = mmap.mmap(fd, mmap_size)
             data_layout = DataLayout.from_buffer(mmap_f)
             refcount_header = data_layout.refcount_header
@@ -170,7 +169,7 @@ class ISMBuffer(ism_base.ISMBase):
                 'version':3,
                 'data':(ctypes.addressof(data), False)
             }
-        
+
             if create:
                 # fill in the header information and create the rwlock
                 size_header = data_layout.size_header
@@ -192,34 +191,43 @@ class ISMBuffer(ism_base.ISMBase):
                     refcount_header.refcount = 1
                 # finally, set the magic cookie saying that this thing is ready to go
                 size_header.magic_cookie = self._MAGIC_COOKIE
-        
+
             else:
                 self.descr = bytes(data_layout.descr)
                 refcount_lock = ctypes.byref(refcount_header.refcount_lock)
                 with locking(refcount_lock):
                     refcount_header.refcount += 1
-            
+
             self._refcount_header = weakref.ref(refcount_header)
             # instead of having a __del__ method, we'll use weakref.finalize, which is called BOTH when the object is deleted
             # AND when the system exits.
-            finalizer = Finalizer(self._name, refcount_header, mmap_f, fd)
+            finalizer = Finalizer(self._name, refcount_header, mmap_f)
             weakref.finalize(self, finalizer)
-            
+
         except:
             # something failed somewhere in setting things up
             if create and refcount_lock is not None:
                 lib.pthread_rwlock_destroy(refcount_lock)
-
             if mmap_f is not None:
                 mmap_f.close()
-
-            if fd is not None:
-                # if we got an fd open, close it
-                os.close(fd)
-                if create:
-                    lib.shm_unlink(self._name)
+            if create and fd is not None: # if we succeeded in making a new shm region
+                lib.shm_unlink(self._name)
             raise
-    
+
+        finally:
+            if fd is not None:
+                # if we got an fd open, close it.
+                # It's OK to close fd even in non-error state, since python's mmap
+                # makes an internal copy of fd. In any case we hardly need any
+                # open fd since mmap(2) doesn't depend on an open fd anyway
+                # (though it makes the files show up in lsof and /proc/<pid>/fd
+                # so that's useful.)
+                # But regardless we certainly don't need to keep two duplicate
+                # fds open, so close the original fd from shm_open.
+                # Other option is to use ctypes to call mmap directly, but that's
+                # a bit fussy.
+                os.close(fd)
+
     @property
     def name(self):
         return self._name.decode('utf-8')
@@ -231,27 +239,24 @@ class ISMBuffer(ism_base.ISMBase):
             with locking(ctypes.byref(refcount_header.refcount_lock)):
                 return refcount_header.refcount
 
-class Finalizer:    
-    def __init__(self, name, refcount_header, mmap_f, fd):
+class Finalizer:
+    def __init__(self, name, refcount_header, mmap_f):
         self.name = name
         self.refcount_header = refcount_header
         self.mmap_f = mmap_f
-        self.fd = fd
-    
+
     def __call__(self):
         destroy = False
         refcount_lock = ctypes.byref(self.refcount_header.refcount_lock)
         with locking(refcount_lock):
             self.refcount_header.refcount -= 1
             if self.refcount_header.refcount == 0:
-                destroy = True        
+                destroy = True
         if destroy:
             lib.pthread_rwlock_destroy(refcount_lock)
         del self.refcount_header
         del refcount_lock
         self.mmap_f.close()
-        os.close(self.fd)
         if destroy:
             lib.shm_unlink(self.name)
 
-    

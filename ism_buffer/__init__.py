@@ -26,5 +26,3 @@ from .ism_buffer import ISMBuffer
 
 new = ISMBuffer.new
 open = ISMBuffer.open
-
-__version__ = '0.6'
