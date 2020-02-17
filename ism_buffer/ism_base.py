@@ -37,7 +37,6 @@ class ISMBase:
         arr.fill(353)
         send_arr_to_other_process(arr)
         """
-        
         return cls(name)
 
     @classmethod
@@ -47,7 +46,6 @@ class ISMBase:
         arr = buffer.asarray()
         arr.fill(353)
         send_arr_to_other_process(arr)"""
-        
         dtype = numpy.dtype(dtype)
         dtype_str = numpy.lib.format.dtype_to_descr(dtype)
         size = numpy.multiply.reduce(shape, dtype=int) * dtype.itemsize
@@ -56,7 +54,7 @@ class ISMBase:
 
     def __init__(self, name, create, permissions, size, descr):
         pass
-    
+
     def asarray(self):
         array = numpy.array(self, dtype=numpy.uint8, copy=False)
         if self.descr:
